@@ -1,0 +1,23 @@
+{
+  "sdk": "@bonfida/spl-name-service@4.0.1",
+  "rows": [
+    {
+      "name": "example.sns",
+      "domain": "3hAeKRCU9LMrnHZBzJ8YzbHSjJXEV73oaW8s81MWpY95",
+      "records": [
+        "B74ctW4v28rtr98qTxte1o3bPUkqZWndpogh429cauBx",
+        "AhVjzKSDxf3rfEbbKJjbAxQ4JAKRr4d7QNhvpZ6tyBFF",
+        "6Vr2vgSPfqbUnuueJE1zU7pdbBxU2Gv2Q484qcYRX8wy"
+      ]
+    },
+    {
+      "name": "sub.example.sns",
+      "domain": "7EdXhprcUar5F4QkRSFvxUGeXDTn9zFnYZHieoh7XXzN",
+      "records": [
+        "5BQwt6nnsUi31LCDeduGPyESu74rS66H9PL4ukV8rrQD",
+        "5HwbUmGWf336EpsPuPMGjSES916stZHNY2v36CvD6mqo",
+        "6Q1BpMR7ghnsC35z1PjqXH6ARPqWqGauEmhESn8ojZ5i"
+      ]
+    }
+  ]
+}
