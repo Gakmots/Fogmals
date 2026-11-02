@@ -36,6 +36,7 @@ type Config struct {
 	IPFSGateways          []string `json:"ipfs_gateways"`
 	ArweaveGateways       []string `json:"arweave_gateways"`
 	TONProxy              string   `json:"ton_proxy"`
+	FallbackProxy         string   `json:"fallback_proxy"`
 	CCIPRead              bool     `json:"ccip_read"`
 	ResolveTimeout        Duration `json:"resolve_timeout"`
 	ResponseHeaderTimeout Duration `json:"response_header_timeout"`
@@ -119,7 +120,7 @@ func (c Config) Validate() error {
 			return fmt.Errorf("timeouts and cache TTLs must be positive")
 		}
 	}
-	for key, raw := range map[string]string{"ethereum_rpc": c.EthereumRPC, "solana_rpc": c.SolanaRPC, "ton_proxy": c.TONProxy} {
+	for key, raw := range map[string]string{"ethereum_rpc": c.EthereumRPC, "solana_rpc": c.SolanaRPC, "ton_proxy": c.TONProxy, "fallback_proxy": c.FallbackProxy} {
 		if raw == "" {
 			continue
 		}
@@ -127,8 +128,8 @@ func (c Config) Validate() error {
 		if err != nil {
 			return fmt.Errorf("%s: %w", key, err)
 		}
-		if key == "ton_proxy" && u.Path != "" && u.Path != "/" {
-			return fmt.Errorf("ton_proxy cannot have a path")
+		if (key == "ton_proxy" || key == "fallback_proxy") && u.Path != "" && u.Path != "/" {
+			return fmt.Errorf("%s cannot have a path", key)
 		}
 		if isSelf(u, host, port) {
 			return fmt.Errorf("%s points back to the proxy listener", key)

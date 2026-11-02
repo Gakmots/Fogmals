@@ -8,7 +8,7 @@ import (
 
 func TestLoadDefaultsAndJSON(t *testing.T) {
 	c, err := Load("")
-	if err != nil || c.TONProxy != "" || c.IPFSGateways[0] != "http://localhost:8080" || c.ArweaveGateways[0] != "http://localhost:1984" {
+	if err != nil || c.TONProxy != "" || c.FallbackProxy != "" || c.IPFSGateways[0] != "http://localhost:8080" || c.ArweaveGateways[0] != "http://localhost:1984" {
 		t.Fatalf("defaults: %+v %v", c, err)
 	}
 	for _, tc := range []struct {
@@ -21,6 +21,13 @@ func TestLoadDefaultsAndJSON(t *testing.T) {
 		{`{"cache_ttl":"0s"}`, false}, {`{"listen":"0.0.0.0:18080"}`, false},
 		{`{"ipfs_gateways":["http://127.0.0.1:8080"]}`, false},
 		{`{"ton_proxy":"http://localhost:18080"}`, false},
+		{`{"fallback_proxy":"http://127.0.0.1:7890"}`, true},
+		{`{"fallback_proxy":"https://proxy.example:8443"}`, true},
+		{`{"fallback_proxy":"http://localhost:18080"}`, false},
+		{`{"fallback_proxy":"http://[::1]:18080"}`, false},
+		{`{"fallback_proxy":"http://127.0.0.1:7890/path"}`, false},
+		{`{"fallback_proxy":"socks5://127.0.0.1:7890"}`, false},
+		{`{"fallback_proxy":"http://user:password@proxy.example"}`, false},
 		{`{"ipfs_gateways":["http://localhost:8080/ipfs"]}`, false},
 		{`{"arweave_gateways":[]}`, false}, {`{"max_concurrent":0}`, false},
 	} {

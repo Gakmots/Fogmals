@@ -5,25 +5,21 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"dwebproxy/internal/config"
 	"dwebproxy/internal/content"
 	"dwebproxy/internal/gateway"
-	"dwebproxy/internal/netutil"
 	"dwebproxy/internal/resolve"
 )
 
 type Handler struct {
 	resolver      resolve.Resolver
 	ipfs, arweave *gateway.Pool
-	ton           *httputil.ReverseProxy
-	tonTransport  *http.Transport
+	ton, fallback *forwardProxy
 	limit         chan struct{}
 	timeout       time.Duration
 	logger        *slog.Logger
@@ -45,20 +41,15 @@ func New(c config.Config, resolver resolve.Resolver, logger *slog.Logger) (*Hand
 		h.ipfs.Close()
 		return nil, err
 	}
-	if c.TONProxy != "" {
-		u, _ := url.Parse(c.TONProxy)
-		t := netutil.Transport(time.Duration(c.ResponseHeaderTimeout))
-		t.Proxy = http.ProxyURL(u)
-		h.tonTransport = t
-		h.ton = &httputil.ReverseProxy{Transport: t, Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.Out.URL.Scheme = "http"
-			pr.Out.URL.Host = pr.In.Host
-			pr.Out.Host = pr.In.Host
-			pr.Out.Header.Del("Proxy-Authorization")
-		}, ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			logger.Warn("TON proxy request failed", "host", r.Host, "error", err)
-			http.Error(w, "TON proxy unavailable", http.StatusBadGateway)
-		}}
+	h.ton, err = newForwardProxy(c.TONProxy, "TON", time.Duration(c.ResponseHeaderTimeout), logger)
+	if err != nil {
+		h.Close()
+		return nil, err
+	}
+	h.fallback, err = newForwardProxy(c.FallbackProxy, "fallback", time.Duration(c.ResponseHeaderTimeout), logger)
+	if err != nil {
+		h.Close()
+		return nil, err
 	}
 	return h, nil
 }
@@ -66,9 +57,8 @@ func New(c config.Config, resolver resolve.Resolver, logger *slog.Logger) (*Hand
 func (h *Handler) Close() {
 	h.ipfs.Close()
 	h.arweave.Close()
-	if h.tonTransport != nil {
-		h.tonTransport.CloseIdleConnections()
-	}
+	h.ton.Close()
+	h.fallback.Close()
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -91,7 +81,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		case "/proxy.pac":
 			w.Header().Set("Content-Type", "application/x-ns-proxy-autoconfig")
-			fmt.Fprintf(w, pac, h.listen)
+			fmt.Fprintf(w, pac, h.fallback != nil, h.listen)
 			return
 		}
 	}
@@ -100,14 +90,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if !strings.HasSuffix(name, ".eth") && !strings.HasSuffix(name, ".sns") && !strings.HasSuffix(name, ".ton") {
+	matched := strings.HasSuffix(name, ".eth") || strings.HasSuffix(name, ".sns") || strings.HasSuffix(name, ".ton")
+	if !matched && h.fallback == nil {
 		http.Error(w, "unsupported domain suffix", http.StatusForbidden)
 		return
 	}
-	name, err = resolve.Normalize(name)
-	if err != nil {
-		http.Error(w, "invalid domain name", http.StatusBadRequest)
-		return
+	if matched {
+		if r.URL.Port() != "" && r.URL.Port() != "80" {
+			http.Error(w, "only target port 80 is supported for matched domains", http.StatusBadRequest)
+			return
+		}
+		name, err = resolve.Normalize(name)
+		if err != nil {
+			http.Error(w, "invalid domain name", http.StatusBadRequest)
+			return
+		}
 	}
 	if r.Method == http.MethodTrace || r.Header.Get("Upgrade") != "" {
 		http.Error(w, "method or protocol upgrade not supported", http.StatusMethodNotAllowed)
@@ -118,6 +115,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer func() { <-h.limit }()
 	default:
 		http.Error(w, "too many concurrent requests", http.StatusServiceUnavailable)
+		return
+	}
+	if !matched {
+		h.fallback.ServeHTTP(w, r)
 		return
 	}
 	if strings.HasSuffix(name, ".ton") {
@@ -177,11 +178,14 @@ func requestName(r *http.Request) (string, error) {
 	if !strings.EqualFold(r.URL.Host, r.Host) {
 		return "", fmt.Errorf("URL and Host disagree")
 	}
-	if r.URL.Port() != "" && r.URL.Port() != "80" {
-		return "", fmt.Errorf("only target port 80 is supported")
+	if port := r.URL.Port(); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return "", fmt.Errorf("invalid target port")
+		}
 	}
 	host := strings.TrimSuffix(strings.ToLower(r.URL.Hostname()), ".")
-	if host == "" || len(host) > 253 || net.ParseIP(host) != nil {
+	if host == "" || len(host) > 253 {
 		return "", fmt.Errorf("invalid target hostname")
 	}
 	return host, nil
@@ -190,7 +194,7 @@ func requestName(r *http.Request) (string, error) {
 const pac = `function FindProxyForURL(url, host) {
   host = host.toLowerCase().replace(/\.$/, "");
   if (url.substring(0, 5).toLowerCase() === "http:" &&
-      (dnsDomainIs(host, ".eth") || dnsDomainIs(host, ".sns") || dnsDomainIs(host, ".ton"))) {
+      (dnsDomainIs(host, ".eth") || dnsDomainIs(host, ".sns") || dnsDomainIs(host, ".ton") || %t)) {
     return "PROXY %s";
   }
   return "DIRECT";

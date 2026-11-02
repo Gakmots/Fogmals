@@ -69,7 +69,7 @@ func run() error {
 	defer stop()
 	done := make(chan error, 1)
 	go func() { done <- server.ListenAndServe() }()
-	logger.Info("HTTP proxy listening", "address", c.Listen, "ton_enabled", c.TONProxy != "")
+	logger.Info("HTTP proxy listening", "address", c.Listen, "ton_enabled", c.TONProxy != "", "fallback_enabled", c.FallbackProxy != "")
 	select {
 	case err := <-done:
 		if err == http.ErrServerClosed {
