@@ -168,27 +168,3 @@ func TestHTTPSFallbackProxy(t *testing.T) {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
 }
-
-func TestPACReflectsFallbackConfiguration(t *testing.T) {
-	for _, enabled := range []bool{false, true} {
-		c := config.Default()
-		if enabled {
-			c.FallbackProxy = "http://127.0.0.1:7890"
-		}
-		h, resolver := newHandler(t, c)
-		r := httptest.NewRequest("GET", "/proxy.pac", nil)
-		r.Host = c.Listen
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, r)
-		want := "|| false"
-		if enabled {
-			want = "|| true"
-		}
-		if w.Code != 200 || !strings.Contains(w.Body.String(), want) || !strings.Contains(w.Body.String(), "PROXY "+c.Listen) || strings.Contains(w.Body.String(), "7890") {
-			t.Fatalf("unexpected PAC: %d %s", w.Code, w.Body.String())
-		}
-		if resolver.calls.Load() != 0 {
-			t.Fatal("PAC reached a chain resolver")
-		}
-	}
-}

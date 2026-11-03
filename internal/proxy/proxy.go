@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
 	"dwebproxy/internal/config"
@@ -78,33 +76,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			fmt.Fprintln(w, "ok")
-			return
-		case "/proxy.pac":
-			w.Header().Set("Content-Type", "application/x-ns-proxy-autoconfig")
-			fmt.Fprintf(w, pac, h.fallback != nil, h.listen)
-			return
+		default:
+			http.NotFound(w, r)
 		}
+		return
 	}
-	name, err := requestName(r)
+	destination, err := routeRequest(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	matched := strings.HasSuffix(name, ".eth") || strings.HasSuffix(name, ".sns") || strings.HasSuffix(name, ".ton")
-	if !matched && h.fallback == nil {
+	if destination.kind == routeFallback && h.fallback == nil {
 		http.Error(w, "unsupported domain suffix", http.StatusForbidden)
 		return
-	}
-	if matched {
-		if r.URL.Port() != "" && r.URL.Port() != "80" {
-			http.Error(w, "only target port 80 is supported for matched domains", http.StatusBadRequest)
-			return
-		}
-		name, err = resolve.Normalize(name)
-		if err != nil {
-			http.Error(w, "invalid domain name", http.StatusBadRequest)
-			return
-		}
 	}
 	if r.Method == http.MethodTrace || r.Header.Get("Upgrade") != "" {
 		http.Error(w, "method or protocol upgrade not supported", http.StatusMethodNotAllowed)
@@ -117,11 +101,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "too many concurrent requests", http.StatusServiceUnavailable)
 		return
 	}
-	if !matched {
+	switch destination.kind {
+	case routeFallback:
 		h.fallback.ServeHTTP(w, r)
 		return
-	}
-	if strings.HasSuffix(name, ".ton") {
+	case routeTON:
 		if h.ton == nil {
 			http.Error(w, "TON proxy is not configured", http.StatusServiceUnavailable)
 			return
@@ -143,7 +127,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
-	target, err := h.resolver.Resolve(ctx, name)
+	target, err := h.resolver.Resolve(ctx, destination.name)
 	cancel()
 	if err != nil {
 		status := http.StatusBadGateway
@@ -157,7 +141,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, content.ErrUnsupported):
 			status = http.StatusNotImplemented
 		}
-		h.logger.Warn("resolution failed", "name", name, "error", err)
+		h.logger.Warn("resolution failed", "name", destination.name, "error", err)
 		http.Error(w, http.StatusText(status), status)
 		return
 	}
@@ -170,33 +154,3 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unsupported content protocol", http.StatusNotImplemented)
 	}
 }
-
-func requestName(r *http.Request) (string, error) {
-	if !r.URL.IsAbs() || r.URL.Scheme != "http" || r.URL.Opaque != "" || r.URL.User != nil || r.URL.Fragment != "" {
-		return "", fmt.Errorf("expected an absolute http proxy URL")
-	}
-	if !strings.EqualFold(r.URL.Host, r.Host) {
-		return "", fmt.Errorf("URL and Host disagree")
-	}
-	if port := r.URL.Port(); port != "" {
-		n, err := strconv.Atoi(port)
-		if err != nil || n < 1 || n > 65535 {
-			return "", fmt.Errorf("invalid target port")
-		}
-	}
-	host := strings.TrimSuffix(strings.ToLower(r.URL.Hostname()), ".")
-	if host == "" || len(host) > 253 {
-		return "", fmt.Errorf("invalid target hostname")
-	}
-	return host, nil
-}
-
-const pac = `function FindProxyForURL(url, host) {
-  host = host.toLowerCase().replace(/\.$/, "");
-  if (url.substring(0, 5).toLowerCase() === "http:" &&
-      (dnsDomainIs(host, ".eth") || dnsDomainIs(host, ".sns") || dnsDomainIs(host, ".ton") || %t)) {
-    return "PROXY %s";
-  }
-  return "DIRECT";
-}
-`
