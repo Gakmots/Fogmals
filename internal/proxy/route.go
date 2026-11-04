@@ -30,6 +30,23 @@ func routeRequest(r *http.Request) (route, error) {
 	if err != nil {
 		return route{}, err
 	}
+	destination, err := classifyName(name)
+	if err != nil {
+		return route{}, err
+	}
+	if destination.kind != routeFallback {
+		port := "80"
+		if r.URL.Scheme == "https" {
+			port = "443"
+		}
+		if r.URL.Port() != "" && r.URL.Port() != port {
+			return route{}, fmt.Errorf("special domain requires port %s", port)
+		}
+	}
+	return destination, nil
+}
+
+func classifyName(name string) (route, error) {
 	kind := routeFallback
 	switch {
 	case strings.HasSuffix(name, ".eth"), strings.HasSuffix(name, ".sns"):
@@ -38,9 +55,7 @@ func routeRequest(r *http.Request) (route, error) {
 		kind = routeTON
 	}
 	if kind != routeFallback {
-		if r.URL.Port() != "" && r.URL.Port() != "80" {
-			return route{}, fmt.Errorf("only target port 80 is supported for matched domains")
-		}
+		var err error
 		name, err = resolve.Normalize(name)
 		if err != nil {
 			return route{}, fmt.Errorf("invalid domain name")
@@ -50,7 +65,8 @@ func routeRequest(r *http.Request) (route, error) {
 }
 
 func requestName(r *http.Request) (string, error) {
-	if !r.URL.IsAbs() || r.URL.Scheme != "http" || r.URL.Opaque != "" || r.URL.User != nil || r.URL.Fragment != "" {
+	secure := r.URL.Scheme == "https" && r.Context().Value(tlsAuthorityKey{}) != nil
+	if !r.URL.IsAbs() || (r.URL.Scheme != "http" && !secure) || r.URL.Opaque != "" || r.URL.User != nil || r.URL.Fragment != "" {
 		return "", fmt.Errorf("expected an absolute http proxy URL")
 	}
 	if !strings.EqualFold(r.URL.Host, r.Host) {

@@ -28,6 +28,13 @@ func TestLoadDefaultsAndJSON(t *testing.T) {
 		{`{"fallback_proxy":"http://127.0.0.1:7890/path"}`, false},
 		{`{"fallback_proxy":"socks5://127.0.0.1:7890"}`, false},
 		{`{"fallback_proxy":"http://user:password@proxy.example"}`, false},
+		{`{"https":{"enabled":true}}`, true},
+		{`{"https":{"connect_ports":[]}}`, false},
+		{`{"https":{"connect_ports":[443,443]}}`, false},
+		{`{"https":{"connect_ports":[65536]}}`, false},
+		{`{"https":{"max_tunnels":0}}`, false},
+		{`{"https":{"handshake_timeout":"0s"}}`, false},
+		{`{"https":{"ca_cert":"same.pem","ca_key":"same.pem"}}`, false},
 		{`{"ipfs_gateways":["http://localhost:8080/ipfs"]}`, false},
 		{`{"arweave_gateways":[]}`, false}, {`{"max_concurrent":0}`, false},
 	} {
@@ -41,5 +48,20 @@ func TestLoadDefaultsAndJSON(t *testing.T) {
 				t.Fatalf("valid=%v error=%v", tc.valid, err)
 			}
 		})
+	}
+}
+
+func TestCertificatePathsFollowConfigDirectory(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte(`{"https":{"ca_cert":"keys/root.pem","ca_key":"keys/root-key.pem"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.HTTPS.CACert != filepath.Join(dir, "keys/root.pem") || c.HTTPS.CAKey != filepath.Join(dir, "keys/root-key.pem") {
+		t.Fatal("certificate paths are not relative to config")
 	}
 }

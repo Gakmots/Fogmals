@@ -18,6 +18,7 @@ type Handler struct {
 	resolver      resolve.Resolver
 	ipfs, arweave *gateway.Pool
 	ton, fallback *forwardProxy
+	https         *httpsIngress
 	limit         chan struct{}
 	timeout       time.Duration
 	logger        *slog.Logger
@@ -49,10 +50,16 @@ func New(c config.Config, resolver resolve.Resolver, logger *slog.Logger) (*Hand
 		h.Close()
 		return nil, err
 	}
+	h.https, err = newHTTPS(c)
+	if err != nil {
+		h.Close()
+		return nil, err
+	}
 	return h, nil
 }
 
 func (h *Handler) Close() {
+	h.https.Close()
 	h.ipfs.Close()
 	h.arweave.Close()
 	h.ton.Close()
@@ -62,7 +69,7 @@ func (h *Handler) Close() {
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if r.Method == http.MethodConnect {
-		http.Error(w, "HTTPS CONNECT is not supported", http.StatusNotImplemented)
+		h.serveConnect(w, r)
 		return
 	}
 	// Local utility endpoints are only available in origin-form requests to the

@@ -12,5 +12,14 @@
   "cache_ttl": "60s",
   "negative_cache_ttl": "5s",
   "cache_size": 1024,
-  "max_concurrent": 64
+  "max_concurrent": 64,
+  "https": {
+    "enabled": false,
+    "ca_cert": "certs/ca.pem",
+    "ca_key": "certs/ca-key.pem",
+    "connect_ports": [443],
+    "handshake_timeout": "10s",
+    "tunnel_idle_timeout": "5m",
+    "max_tunnels": 64
+  }
 }

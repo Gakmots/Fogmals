@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -44,6 +45,17 @@ type Config struct {
 	NegativeCacheTTL      Duration `json:"negative_cache_ttl"`
 	CacheSize             int      `json:"cache_size"`
 	MaxConcurrent         int      `json:"max_concurrent"`
+	HTTPS                 HTTPS    `json:"https"`
+}
+
+type HTTPS struct {
+	Enabled           bool     `json:"enabled"`
+	CACert            string   `json:"ca_cert"`
+	CAKey             string   `json:"ca_key"`
+	ConnectPorts      []int    `json:"connect_ports"`
+	HandshakeTimeout  Duration `json:"handshake_timeout"`
+	TunnelIdleTimeout Duration `json:"tunnel_idle_timeout"`
+	MaxTunnels        int      `json:"max_tunnels"`
 }
 
 func Default() Config {
@@ -52,6 +64,7 @@ func Default() Config {
 		IPFSGateways: []string{"http://localhost:8080"}, ArweaveGateways: []string{"http://localhost:1984"},
 		CCIPRead: true, ResolveTimeout: Duration(15 * time.Second), ResponseHeaderTimeout: Duration(30 * time.Second),
 		CacheTTL: Duration(time.Minute), NegativeCacheTTL: Duration(5 * time.Second), CacheSize: 1024, MaxConcurrent: 64,
+		HTTPS: HTTPS{CACert: "certs/ca.pem", CAKey: "certs/ca-key.pem", ConnectPorts: []int{443}, HandshakeTimeout: Duration(10 * time.Second), TunnelIdleTimeout: Duration(5 * time.Minute), MaxTunnels: 64},
 	}
 }
 
@@ -79,6 +92,17 @@ func Load(path string) (Config, error) {
 		var extra any
 		if err := dec.Decode(&extra); err != io.EOF {
 			return c, fmt.Errorf("config: expected one JSON object")
+		}
+		// Certificate paths are relative to the configuration file, not the shell.
+		base, err := filepath.Abs(filepath.Dir(path))
+		if err != nil {
+			return c, err
+		}
+		if c.HTTPS.CACert != "" && !filepath.IsAbs(c.HTTPS.CACert) {
+			c.HTTPS.CACert = filepath.Join(base, c.HTTPS.CACert)
+		}
+		if c.HTTPS.CAKey != "" && !filepath.IsAbs(c.HTTPS.CAKey) {
+			c.HTTPS.CAKey = filepath.Join(base, c.HTTPS.CAKey)
 		}
 	}
 	return c, c.Validate()
@@ -119,6 +143,22 @@ func (c Config) Validate() error {
 		if d <= 0 {
 			return fmt.Errorf("timeouts and cache TTLs must be positive")
 		}
+	}
+	if c.HTTPS.HandshakeTimeout <= 0 || c.HTTPS.TunnelIdleTimeout <= 0 || c.HTTPS.MaxTunnels < 1 || c.HTTPS.MaxTunnels > 10000 {
+		return fmt.Errorf("invalid HTTPS timeout or max_tunnels")
+	}
+	if c.HTTPS.CACert == "" || c.HTTPS.CAKey == "" || filepath.Clean(c.HTTPS.CACert) == filepath.Clean(c.HTTPS.CAKey) {
+		return fmt.Errorf("HTTPS requires distinct CA certificate and key paths")
+	}
+	if len(c.HTTPS.ConnectPorts) == 0 || len(c.HTTPS.ConnectPorts) > 32 {
+		return fmt.Errorf("HTTPS connect_ports must contain 1..32 ports")
+	}
+	seen := make(map[int]bool)
+	for _, p := range c.HTTPS.ConnectPorts {
+		if p < 1 || p > 65535 || seen[p] {
+			return fmt.Errorf("invalid or duplicate HTTPS connect port")
+		}
+		seen[p] = true
 	}
 	for key, raw := range map[string]string{"ethereum_rpc": c.EthereumRPC, "solana_rpc": c.SolanaRPC, "ton_proxy": c.TONProxy, "fallback_proxy": c.FallbackProxy} {
 		if raw == "" {

@@ -160,12 +160,15 @@ func (p *Pool) Serve(w http.ResponseWriter, r *http.Request, t content.Target) {
 				}
 				resp.Header.Set("Location", loc)
 			}
-			for _, h := range []string{"Set-Cookie", "Strict-Transport-Security", "Age", "Expires", "Surrogate-Control", "CDN-Cache-Control"} {
+			for _, h := range []string{"Set-Cookie", "Strict-Transport-Security", "Alt-Svc", "Age", "Expires", "Surrogate-Control", "CDN-Cache-Control"} {
 				resp.Header.Del(h)
 			}
 			// The browser URL names a mutable domain even when its upstream root
 			// is an immutable CID. Keep validators, require revalidation.
 			resp.Header.Set("Cache-Control", "no-cache")
+			// Replace the entry handler's error-response default instead of
+			// appending a second Cache-Control field to a successful response.
+			w.Header().Del("Cache-Control")
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
@@ -241,7 +244,10 @@ func rewriteLocation(raw string, base, out, in *url.URL, host string, t content.
 	if err := ValidatePath(u); err != nil {
 		return "", err
 	}
-	u.Scheme = "http"
+	u.Scheme = in.Scheme
+	if u.Scheme != "https" {
+		u.Scheme = "http"
+	}
 	u.Host = host
 	if u.Path == in.Path && u.RawQuery == in.RawQuery && rel.Fragment == "" {
 		return "", fmt.Errorf("gateway redirect would loop")
