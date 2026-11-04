@@ -10,9 +10,9 @@
 
 <p align="center">
     
-<img src="https://img.shields.io/badge/version-0.1.2-2563eb?style=flat-square" alt="Version 0.1.2">
+  <img src="https://img.shields.io/badge/version-0.2.0-2563eb?style=flat-square" alt="Version 0.2.0">
     
-<img src="https://img.shields.io/badge/Go-1.27.3%2B-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go 1.27.3+">
+  <img src="https://img.shields.io/badge/Go-1.27.3%2B-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go 1.27.3+">
     
 </p>
 
