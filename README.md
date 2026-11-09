@@ -10,13 +10,23 @@
 
 <p align="center">
     
-  <img src="https://img.shields.io/badge/version-0.2.0-2563eb?style=flat-square" alt="Version 0.2.0">
+  <img src="https://img.shields.io/badge/version-0.2.0-2563eb?style=flat-square" alt="Version 0.2.1">
     
   <img src="https://img.shields.io/badge/Go-1.27.3%2B-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go 1.27.3+">
     
 </p>
 
+**Fogmals Dweb Proxy** is a local content proxy for the decentralized web (DWeb), written in Go. It enables a seamless DWeb browsing experience by integrating with various local content gateways and proxies.
 
+## Features
+
+- **Web3 Multi-Domain Support** — Supports domains such as .eth, .sns, .bnb (planned), .ton, and .i2p (planned).
+- **Standard Web Protocols** — Supports conventional HTTP/HTTP3 methods.
+- **Local HTTPS** — Enables local TLS for supported specialized domains; certificates are initialized and trusted by the user.
+- **Multi-Protocol Content Support** — Includes optional support for IPFS/IPNS and Arweave content.
+- **Modular Design** — Highly flexible; designed to integrate seamlessly with various DWeb gateways and proxy tools.
+
+This project is currently under active development—feel free to submit an issue!
 
 
 **Fogmals Dweb Proxy** 是一个用 Go 编写的去中心化网站（DWeb）本地内容代理。可通过搭配不同的本地内容网关和代理实现无缝的 DWeb 浏览器体验。
@@ -31,4 +41,4 @@
 
 
 
-本项目正在密集开发中，现阶段的功能非常不稳定，请谨慎使用
+本项目正在密集开发中，欢迎随时提出Issue!
