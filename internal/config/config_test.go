@@ -4,12 +4,16 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoadDefaultsAndJSON(t *testing.T) {
 	c, err := Load("")
 	if err != nil || c.TONProxy != "" || c.FallbackProxy != "" || c.IPFSGateways[0] != "http://localhost:8080" || c.ArweaveGateways[0] != "http://localhost:1984" {
 		t.Fatalf("defaults: %+v %v", c, err)
+	}
+	if c.EthereumRPC != "https://ethereum-rpc.publicnode.com" || c.SolanaRPC != "https://api.mainnet.solana.com" || c.ResponseHeaderTimeout != Duration(120*time.Second) || !c.HTTPS.Enabled {
+		t.Fatalf("RPC, timeout or HTTPS defaults: %+v", c)
 	}
 	for _, tc := range []struct {
 		json  string

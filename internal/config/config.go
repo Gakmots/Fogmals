@@ -60,11 +60,11 @@ type HTTPS struct {
 
 func Default() Config {
 	return Config{
-		Listen: "127.0.0.1:18080", EthereumRPC: "http://localhost:8545", SolanaRPC: "http://localhost:8899",
+		Listen: "127.0.0.1:18080", EthereumRPC: "https://ethereum-rpc.publicnode.com", SolanaRPC: "https://api.mainnet.solana.com",
 		IPFSGateways: []string{"http://localhost:8080"}, ArweaveGateways: []string{"http://localhost:1984"},
-		CCIPRead: true, ResolveTimeout: Duration(15 * time.Second), ResponseHeaderTimeout: Duration(30 * time.Second),
+		CCIPRead: true, ResolveTimeout: Duration(15 * time.Second), ResponseHeaderTimeout: Duration(120 * time.Second),
 		CacheTTL: Duration(time.Minute), NegativeCacheTTL: Duration(5 * time.Second), CacheSize: 1024, MaxConcurrent: 64,
-		HTTPS: HTTPS{CACert: "certs/ca.pem", CAKey: "certs/ca-key.pem", ConnectPorts: []int{443}, HandshakeTimeout: Duration(10 * time.Second), TunnelIdleTimeout: Duration(5 * time.Minute), MaxTunnels: 64},
+		HTTPS: HTTPS{Enabled: true, CACert: "certs/ca.pem", CAKey: "certs/ca-key.pem", ConnectPorts: []int{443}, HandshakeTimeout: Duration(10 * time.Second), TunnelIdleTimeout: Duration(5 * time.Minute), MaxTunnels: 64},
 	}
 }
 

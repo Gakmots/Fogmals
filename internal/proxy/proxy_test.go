@@ -22,6 +22,12 @@ func (r *fakeResolver) Resolve(context.Context, string) (content.Target, error) 
 	return content.Parse(content.IPFS, "QmRAQB6YaCyidP37UdDnjFY5vQuiBrcqdyoW1CuDgwxkD4")
 }
 
+func httpConfig() config.Config {
+	c := config.Default()
+	c.HTTPS.Enabled = false
+	return c
+}
+
 func newHandler(t *testing.T, c config.Config) (*Handler, *fakeResolver) {
 	t.Helper()
 	r := &fakeResolver{}
@@ -34,7 +40,7 @@ func newHandler(t *testing.T, c config.Config) (*Handler, *fakeResolver) {
 }
 
 func TestRoutingBoundaries(t *testing.T) {
-	h, resolver := newHandler(t, config.Default())
+	h, resolver := newHandler(t, httpConfig())
 	for _, tc := range []struct {
 		method, url string
 		status      int
@@ -83,7 +89,7 @@ func TestTONUsesForwardProxyAndPreservesBody(t *testing.T) {
 		io.WriteString(w, "TON response")
 	}))
 	defer up.Close()
-	c := config.Default()
+	c := httpConfig()
 	c.TONProxy = up.URL
 	h, r := newHandler(t, c)
 	w := httptest.NewRecorder()
@@ -101,7 +107,7 @@ func TestTONUsesForwardProxyAndPreservesBody(t *testing.T) {
 func TestBrowserStyleForwardRequest(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, r.Host+r.URL.Path) }))
 	defer up.Close()
-	c := config.Default()
+	c := httpConfig()
 	c.IPFSGateways = []string{strings.Replace(up.URL, "127.0.0.1", "localhost", 1)}
 	h, _ := newHandler(t, c)
 	listener := httptest.NewServer(h)

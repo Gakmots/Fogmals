@@ -8,8 +8,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-
-	"dwebproxy/internal/config"
 )
 
 // All destinations enter through one real HTTP proxy connection configuration.
@@ -34,7 +32,7 @@ func TestInternalRoutingThroughSingleProxyListener(t *testing.T) {
 		io.WriteString(w, "fallback:"+r.RequestURI)
 	}))
 	defer fallback.Close()
-	c := config.Default()
+	c := httpConfig()
 	c.IPFSGateways = []string{strings.Replace(content.URL, "127.0.0.1", "localhost", 1)}
 	c.TONProxy = ton.URL
 	c.FallbackProxy = fallback.URL
@@ -74,7 +72,7 @@ func TestLocalToolsStayOutsideDestinationRouting(t *testing.T) {
 		upstreamCalls.Add(1)
 	}))
 	defer up.Close()
-	c := config.Default()
+	c := httpConfig()
 	c.FallbackProxy = up.URL
 	h, resolver := newHandler(t, c)
 	for _, tc := range []struct {

@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"dwebproxy/internal/config"
 	"dwebproxy/internal/content"
 	"dwebproxy/internal/resolve"
 )
@@ -40,7 +39,7 @@ func TestFallbackPreservesUnmatchedHTTPRequests(t *testing.T) {
 				io.WriteString(w, "fallback response")
 			}))
 			defer up.Close()
-			c := config.Default()
+			c := httpConfig()
 			c.FallbackProxy = up.URL
 			h, resolver := newHandler(t, c)
 			req := httptest.NewRequest("POST", target, strings.NewReader("payload"))
@@ -73,7 +72,7 @@ func TestFallbackDoesNotHandleMatchedFailuresOrInvalidRequests(t *testing.T) {
 		io.WriteString(w, "unexpected fallback")
 	}))
 	defer up.Close()
-	c := config.Default()
+	c := httpConfig()
 	c.FallbackProxy = up.URL
 	h, _ := newHandler(t, c)
 	h.resolver = missingResolver{}
@@ -114,7 +113,7 @@ func TestMatchedGatewayAndTONKeepPriority(t *testing.T) {
 		io.WriteString(w, "matched upstream")
 	}))
 	defer up.Close()
-	c := config.Default()
+	c := httpConfig()
 	c.FallbackProxy = fallback.URL
 	c.TONProxy = up.URL
 	c.IPFSGateways = []string{strings.Replace(up.URL, "127.0.0.1", "localhost", 1)}
@@ -139,7 +138,7 @@ func TestFallbackFailureDoesNotConnectDirectly(t *testing.T) {
 	defer target.Close()
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	up.Close()
-	c := config.Default()
+	c := httpConfig()
 	c.FallbackProxy = up.URL
 	h, _ := newHandler(t, c)
 	w := httptest.NewRecorder()
@@ -157,7 +156,7 @@ func TestHTTPSFallbackProxy(t *testing.T) {
 		io.WriteString(w, "secure next hop")
 	}))
 	defer up.Close()
-	c := config.Default()
+	c := httpConfig()
 	c.FallbackProxy = up.URL
 	h, _ := newHandler(t, c)
 	// Trust only the httptest server's test certificate.
