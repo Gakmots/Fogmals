@@ -11,10 +11,13 @@ import (
 	"time"
 )
 
-func Transport(headerTimeout time.Duration) *http.Transport {
+func Transport(headerTimeout time.Duration, dial DialContextFunc) *http.Transport {
+	if dial == nil {
+		dial = directDialer()
+	}
 	return &http.Transport{
 		Proxy:             nil,
-		DialContext:       (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		DialContext:       dial,
 		ForceAttemptHTTP2: true, MaxIdleConns: 128, MaxIdleConnsPerHost: 16, MaxConnsPerHost: 64,
 		IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 10 * time.Second,
 		ResponseHeaderTimeout: headerTimeout, ExpectContinueTimeout: time.Second,
@@ -22,8 +25,8 @@ func Transport(headerTimeout time.Duration) *http.Transport {
 	}
 }
 
-func Client(timeout time.Duration) *http.Client {
-	return &http.Client{Transport: Transport(timeout), Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+func Client(timeout time.Duration, dial DialContextFunc) *http.Client {
+	return &http.Client{Transport: Transport(timeout, dial), Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
 type ccipTransport struct {
@@ -45,8 +48,9 @@ func (t *ccipTransport) CloseIdleConnections() { t.base.CloseIdleConnections() }
 
 // CCIPClient verifies public addresses at the socket boundary, including DNS
 // results, so DNS rebinding cannot route a chain-supplied URL into the LAN.
-func CCIPClient(enabled bool, timeout time.Duration) *http.Client {
-	t := Transport(timeout)
+func CCIPClient(enabled bool, timeout time.Duration, dial DialContextFunc) *http.Client {
+	t := Transport(timeout, dial)
+	connect := t.DialContext
 	t.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(address)
 		if err != nil {
@@ -66,7 +70,7 @@ func CCIPClient(enabled bool, timeout time.Duration) *http.Client {
 		}
 		var last error
 		for _, ip := range ips {
-			conn, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			conn, err := connect(ctx, network, net.JoinHostPort(ip.Unmap().String(), port))
 			if err == nil {
 				return conn, nil
 			}

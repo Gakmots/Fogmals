@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -28,27 +29,23 @@ type Pool struct {
 	logger    *slog.Logger
 }
 
-func New(origins []string, timeout time.Duration, logger *slog.Logger) (*Pool, error) {
+func New(origins []string, timeout time.Duration, logger *slog.Logger, dial netutil.DialContextFunc) (*Pool, error) {
 	p := &Pool{logger: logger}
 	for _, raw := range origins {
 		base, err := config.Endpoint(raw)
 		if err != nil {
 			return nil, err
 		}
-		t := netutil.Transport(timeout)
-		port := base.Port()
-		if port == "" {
-			if base.Scheme == "https" {
-				port = "443"
-			} else {
-				port = "80"
-			}
+		t := netutil.Transport(timeout, dial)
+		connect := t.DialContext
+		address, err := netutil.EndpointAddress(base)
+		if err != nil {
+			return nil, err
 		}
 		// URL and Host use the content subdomain. The socket uses the configured
 		// gateway host, so *.ipfs.localhost needs no OS DNS or hosts entries.
-		address := net.JoinHostPort(base.Hostname(), port)
 		t.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext(ctx, network, address)
+			return connect(ctx, network, address)
 		}
 		p.endpoints = append(p.endpoints, endpoint{base, t})
 	}
@@ -61,6 +58,8 @@ func (p *Pool) Close() {
 	}
 }
 
+var encodedOctet = regexp.MustCompile(`%[0-9a-fA-F]{2}`)
+
 func ValidatePath(u *url.URL) error {
 	if u.Path != "" && !strings.HasPrefix(u.Path, "/") {
 		return fmt.Errorf("path must be absolute")
@@ -72,13 +71,28 @@ func ValidatePath(u *url.URL) error {
 		if err != nil {
 			return err
 		}
-		if s == "." || s == ".." || strings.ContainsAny(s, "/\\\x00\r\n") {
-			return fmt.Errorf("unsafe path segment")
-		}
-		// Nested percent encodings are ambiguous across proxy stacks. v1 rejects
-		// them rather than guessing how often an upstream will decode a path.
-		if strings.Contains(s, "%") {
-			return fmt.Errorf("nested percent encoding is not supported")
+		// Literal percent signs and harmless nested escapes are valid names.
+		// Check further decoding layers without changing the forwarded path:
+		// a gateway stack must never uncover a separator or traversal segment.
+		for depth := 0; ; depth++ {
+			if s == "." || s == ".." || strings.ContainsAny(s, "/\\") {
+				return fmt.Errorf("unsafe path segment")
+			}
+			for _, c := range []byte(s) {
+				if c < 0x20 || c == 0x7f {
+					return fmt.Errorf("control character in path")
+				}
+			}
+			if !encodedOctet.MatchString(s) {
+				break
+			}
+			if depth == 8 {
+				return fmt.Errorf("too many path encoding layers")
+			}
+			s = encodedOctet.ReplaceAllStringFunc(s, func(escape string) string {
+				decoded, _ := url.PathUnescape(escape)
+				return decoded
+			})
 		}
 	}
 	q, err := url.ParseQuery(u.RawQuery)
@@ -102,15 +116,27 @@ func targetURL(base *url.URL, t content.Target, in *url.URL) *url.URL {
 	}
 	u.RawQuery = in.RawQuery
 	u.ForceQuery = in.ForceQuery
-	if t.Kind == content.Arweave {
-		u.Path = "/" + t.ID + u.Path
+	if prefix := pathRoot(t); prefix != "" {
+		u.Path = prefix + u.Path
 		if in.RawPath != "" {
-			u.RawPath = "/" + t.ID + in.RawPath
+			u.RawPath = prefix + in.RawPath
 		}
 	} else {
 		u.Host = t.ID + "." + string(t.Kind) + "." + base.Host
 	}
 	return &u
+}
+
+// Swarm and Arweave share path-root isolation; IPFS/IPNS use subdomains.
+func pathRoot(t content.Target) string {
+	switch t.Kind {
+	case content.Arweave:
+		return "/" + t.ID
+	case content.Swarm:
+		return "/bzz/" + t.ID
+	default:
+		return ""
+	}
 }
 
 type roundTripper func(*http.Request) (*http.Response, error)
@@ -119,7 +145,7 @@ func (f roundTripper) RoundTrip(r *http.Request) (*http.Response, error) { retur
 
 func (p *Pool) Serve(w http.ResponseWriter, r *http.Request, t content.Target) {
 	if len(p.endpoints) == 0 {
-		http.Error(w, "content gateway not configured", http.StatusServiceUnavailable)
+		netutil.Error(w, "content gateway not configured", http.StatusServiceUnavailable)
 		return
 	}
 	var chosen endpoint
@@ -166,19 +192,11 @@ func (p *Pool) Serve(w http.ResponseWriter, r *http.Request, t content.Target) {
 			// The browser URL names a mutable domain even when its upstream root
 			// is an immutable CID. Keep validators, require revalidation.
 			resp.Header.Set("Cache-Control", "no-cache")
-			// Replace the entry handler's error-response default instead of
-			// appending a second Cache-Control field to a successful response.
-			w.Header().Del("Cache-Control")
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
 			p.logger.Warn("gateway request failed", "host", r.Host, "error", err)
-			status := http.StatusBadGateway
-			var timeout net.Error
-			if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &timeout) && timeout.Timeout()) {
-				status = http.StatusGatewayTimeout
-			}
-			http.Error(w, "content gateway unavailable", status)
+			netutil.Error(w, "content gateway unavailable", netutil.ProxyErrorStatus(req.Context(), err))
 		},
 	}
 	proxy.ServeHTTP(w, r)
@@ -189,18 +207,9 @@ func rewriteLocation(raw string, base, out, in *url.URL, host string, t content.
 	if err != nil {
 		return "", fmt.Errorf("invalid gateway redirect")
 	}
-	// ResolveReference cleans dot segments. Validate before that information is
-	// lost, including relative Location values.
-	check := *rel
-	if check.Path != "" && !strings.HasPrefix(check.Path, "/") {
-		check.Path = "/" + check.Path
-		if check.RawPath != "" {
-			check.RawPath = "/" + check.RawPath
-		}
-	}
-	if err := ValidatePath(&check); err != nil {
-		return "", err
-	}
+	// RFC 3986 relative navigation may contain dot segments. Resolve first,
+	// then enforce the content root on the resulting gateway URL. External
+	// navigation is never fetched here and needs no gateway path restrictions.
 	u := out.ResolveReference(rel)
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return raw, nil
@@ -209,17 +218,16 @@ func rewriteLocation(raw string, base, out, in *url.URL, host string, t content.
 		return "", fmt.Errorf("gateway redirect contains credentials")
 	}
 	if strings.EqualFold(u.Host, out.Host) || (t.Kind == content.Arweave && sameArweaveGateway(u, base)) {
-		if t.Kind == content.Arweave {
-			prefix := "/" + t.ID
+		if prefix := pathRoot(t); prefix != "" {
 			if u.Path != prefix && !strings.HasPrefix(u.Path, prefix+"/") {
-				return "", fmt.Errorf("gateway redirect escapes Arweave content root")
+				return "", fmt.Errorf("gateway redirect escapes content root")
 			}
 			u.Path = strings.TrimPrefix(u.Path, prefix)
 			if u.RawPath != "" {
 				u.RawPath = strings.TrimPrefix(u.RawPath, prefix)
 			}
 		}
-	} else if strings.EqualFold(u.Host, base.Host) && t.Kind != content.Arweave {
+	} else if strings.EqualFold(u.Host, base.Host) && pathRoot(t) == "" {
 		parts := strings.SplitN(strings.TrimPrefix(u.Path, "/"), "/", 3)
 		if len(parts) < 2 || parts[0] != string(t.Kind) {
 			return "", fmt.Errorf("gateway redirect escapes content root")

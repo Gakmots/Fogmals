@@ -1,14 +1,25 @@
 {
   "listen": "127.0.0.1:18080",
+  "listen_protocol": "http",
+  "program_proxy": {
+    "enabled": false,
+    "url": ""
+  },
   "ethereum_rpc": "https://ethereum-rpc.publicnode.com",
   "solana_rpc": "https://api.mainnet.solana.com",
+  "record_priority": {
+    "ens": ["ContentHash"],
+    "sns": ["IPFS", "IPNS", "Arweave"]
+  },
   "ipfs_gateways": ["http://localhost:8080"],
   "arweave_gateways": ["http://localhost:1984"],
+  "swarm_gateways": ["http://localhost:1633"],
   "ton_proxy": "",
   "fallback_proxy": "",
   "ccip_read": true,
   "resolve_timeout": "15s",
   "response_header_timeout": "120s",
+  "stream_idle_timeout": "120s",
   "cache_ttl": "60s",
   "negative_cache_ttl": "5s",
   "cache_size": 1024,

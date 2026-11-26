@@ -88,7 +88,7 @@ func TestFallbackDoesNotHandleMatchedFailuresOrInvalidRequests(t *testing.T) {
 		{"GET", "http://example.sns/?uri=evil", 400},
 		{"GET", "http://example.com:0/", 400},
 		{"GET", "https://example.com/", 400},
-		{"CONNECT", "http://example.com:443/", 501},
+		{"CONNECT", "http://example.com:443/", 400},
 		{"TRACE", "http://example.com/", 405},
 	} {
 		w := httptest.NewRecorder()

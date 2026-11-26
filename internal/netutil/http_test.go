@@ -22,7 +22,7 @@ func TestCCIPNetworkBoundary(t *testing.T) {
 		enabled bool
 		url     string
 	}{{true, "http://example.com"}, {true, "https://127.0.0.1:1"}, {true, "https://[::1]:1"}, {false, "https://example.com"}} {
-		c := CCIPClient(tc.enabled, time.Second)
+		c := CCIPClient(tc.enabled, time.Second, nil)
 		r, _ := http.NewRequest(http.MethodGet, tc.url, nil)
 		if resp, err := c.Do(r); err == nil {
 			resp.Body.Close()

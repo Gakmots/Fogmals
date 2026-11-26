@@ -14,6 +14,8 @@ import (
 
 	"dwebproxy/internal/content"
 	"dwebproxy/internal/netutil"
+	"dwebproxy/internal/records"
+	"dwebproxy/internal/testutil"
 	solana "github.com/solana-foundation/solana-go/v2"
 )
 
@@ -37,15 +39,19 @@ func TestSNSDerivationMatchesOfficialSDK(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	recordTypes, err := records.ForSNS(records.Default().SNS)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, row := range fixture.Rows {
 		key, _, err := domainKey(row.Name)
 		if err != nil || key.String() != row.Domain {
 			t.Fatalf("domain %s: %s %v", row.Name, key, err)
 		}
 		for i, typ := range recordTypes {
-			got, err := nameKey("\x02"+typ.name, class, key)
+			got, err := nameKey("\x02"+typ.Name, class, key)
 			if err != nil || got.String() != row.Records[i] {
-				t.Errorf("%s %s: %s %v", row.Name, typ.name, got, err)
+				t.Errorf("%s %s: %s %v", row.Name, typ.Name, got, err)
 			}
 		}
 	}
@@ -82,12 +88,22 @@ func TestSNSV2ResolutionAndStaleness(t *testing.T) {
 	class, _ := recordClass()
 	for _, tc := range []struct {
 		name                                  string
+		proxy                                 string
+		localRPC                              bool
+		order                                 []records.Type
 		stale, missing, tokenized, rpcFailure bool
 	}{
 		{name: "normal"}, {name: "transferred", stale: true}, {name: "missing", missing: true},
-		{name: "NFT owner", tokenized: true}, {name: "NFT RPC failure", tokenized: true, rpcFailure: true},
+		{name: "HTTP program proxy", proxy: "http"}, {name: "SOCKS program proxy / NFT", proxy: "socks5", tokenized: true},
+		{name: "local RPC with HTTP proxy / NFT", proxy: "http", localRPC: true, tokenized: true},
+		{name: "local RPC with SOCKS proxy / NFT", proxy: "socks5", localRPC: true, tokenized: true},
+		{name: "NFT owner", tokenized: true}, {name: "NFT owner / single record", tokenized: true, order: []records.Type{records.IPFS}}, {name: "NFT RPC failure", tokenized: true, rpcFailure: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			order := tc.order
+			if order == nil {
+				order = records.Default().SNS
+			}
 			current := owner
 			if tc.stale {
 				current = newOwner
@@ -121,7 +137,7 @@ func TestSNSV2ResolutionAndStaleness(t *testing.T) {
 				case "getMultipleAccounts":
 					var keys []string
 					json.Unmarshal(req.Params[0], &keys)
-					if len(keys) != 5 || keys[0] != key.String() {
+					if len(keys) != len(order)+2 || keys[0] != key.String() {
 						t.Error("incorrect account batch")
 					}
 					var opts map[string]any
@@ -129,7 +145,8 @@ func TestSNSV2ResolutionAndStaleness(t *testing.T) {
 					if opts["commitment"] != "finalized" {
 						t.Error("commitment not finalized")
 					}
-					values := []any{domain, record, nil, nil, mintAccount}
+					values := make([]any, len(order)+2)
+					values[0], values[1], values[len(values)-1] = domain, record, mintAccount
 					if tc.missing {
 						values[1] = nil
 					}
@@ -155,9 +172,27 @@ func TestSNSV2ResolutionAndStaleness(t *testing.T) {
 				json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
 			}))
 			defer server.Close()
-			client := netutil.Client(time.Second)
+			var dial netutil.DialContextFunc
+			endpoint := server.URL
+			if tc.proxy != "" {
+				var p *testutil.Proxy
+				dial, p = proxiedRPC(t, tc.proxy, server.URL)
+				if !tc.localRPC {
+					endpoint = "http://solana.invalid/rpc"
+				}
+				defer func() {
+					if tc.localRPC && len(p.Requests) != 0 || !tc.localRPC && len(p.Requests) == 0 {
+						t.Errorf("SNS RPC proxy routing: local=%v proxy connections=%d", tc.localRPC, len(p.Requests))
+					}
+				}()
+			}
+			client := netutil.Client(time.Second, dial)
 			defer client.CloseIdleConnections()
-			got, err := NewSNS(server.URL, client).Resolve(context.Background(), "example.sns")
+			resolver, err := NewSNS(endpoint, client, order)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := resolver.Resolve(context.Background(), "example.sns")
 			switch {
 			case tc.rpcFailure:
 				if err == nil {

@@ -3,6 +3,7 @@ package content
 import (
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -71,12 +72,46 @@ func TestContenthashNamespaces(t *testing.T) {
 			t.Fatal(got)
 		}
 	}
-	if _, err := DecodeHash(binary.AppendUvarint(nil, 0xe4)); !errors.Is(err, ErrUnsupported) {
+	if _, err := DecodeHash(binary.AppendUvarint(nil, 0x999)); !errors.Is(err, ErrUnsupported) {
 		t.Fatal(err)
 	}
 	for _, raw := range [][]byte{nil, {0x80}, {0xe3, 1, 0}, {0x90, 0xb2, 0xc9, 0x05, 1}} {
 		if _, err := DecodeHash(raw); err == nil {
 			t.Errorf("accepted %x", raw)
+		}
+	}
+}
+
+func TestSwarmReferencesAndENSIP7Vector(t *testing.T) {
+	const reference = "d1de9994b4d039f6548d191eb26786769f580809256b4685ef316805265ea162"
+	for _, value := range []string{reference, "bzz://" + reference, "/bzz/" + reference, strings.ToUpper(reference)} {
+		root, err := Parse(Swarm, value)
+		if err != nil || root.ID != reference || root.String() != "bzz://"+reference {
+			t.Fatalf("Swarm reference %q: %v %v", value, root, err)
+		}
+	}
+	// The published ENSIP-7 test vector, independent of our own encoding code.
+	raw, _ := hex.DecodeString("e40101fa011b20" + reference)
+	root, err := DecodeHash(raw)
+	if err != nil || root.Kind != Swarm || root.ID != reference {
+		t.Fatalf("ENSIP-7 Swarm vector: %v %v", root, err)
+	}
+	for _, value := range []string{"", reference[:62], reference + "00", strings.Repeat("g", 64), "0x" + reference, "bzz://" + reference + "/", "bzz://" + reference + "/docs", reference + "?x=1", reference + "#fragment", reference + "/../stamps", strings.Repeat("ab", 64)} {
+		if _, err := Parse(Swarm, value); err == nil {
+			t.Errorf("accepted invalid/unsupported Swarm root %q", value)
+		}
+	}
+	for _, encoded := range []string{
+		"e401", "e401" + reference,
+		"e40101701220" + reference,          // wrong CID content type
+		"e40101fb011b20" + reference,        // feed descriptor is not a manifest
+		"e40101fa011220" + reference,        // wrong hash algorithm
+		"e40101fa011b1f" + reference[:62],   // short digest
+		"e40101fa011b20" + reference + "00", // trailing bytes
+	} {
+		b, _ := hex.DecodeString(encoded)
+		if _, err := DecodeHash(b); err == nil {
+			t.Errorf("accepted invalid Swarm contenthash %s", encoded)
 		}
 	}
 }

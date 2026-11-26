@@ -3,6 +3,7 @@ package resolve
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -30,7 +31,8 @@ func TestCacheDeduplicatesAndSeparatesCancellation(t *testing.T) {
 			return content.Target{}, ctx.Err()
 		}
 	})
-	c := NewCached(r, 10, time.Minute, time.Second, time.Second)
+	c := NewCached(r, 10, time.Minute, time.Second, time.Second, 64)
+	t.Cleanup(c.Close)
 	ctx, cancel := context.WithCancel(context.Background())
 	first := make(chan error, 1)
 	go func() { _, err := c.Resolve(ctx, "EXAMPLE.eth"); first <- err }()
@@ -64,7 +66,8 @@ func TestOnlyMissingRecordsAreNegativeCached(t *testing.T) {
 	}{{ErrNotFound, 1}, {errors.New("RPC failed"), 2}, {ErrStale, 2}} {
 		calls := 0
 		r := resolverFunc(func(context.Context, string) (content.Target, error) { calls++; return content.Target{}, tc.err })
-		c := NewCached(r, 2, time.Second, time.Second, time.Second)
+		c := NewCached(r, 2, time.Second, time.Second, time.Second, 64)
+		t.Cleanup(c.Close)
 		for range 2 {
 			_, _ = c.Resolve(context.Background(), "example.sns")
 		}
@@ -93,7 +96,8 @@ func TestCacheExpiresAndEvicts(t *testing.T) {
 		calls.Add(1)
 		return content.Target{Kind: content.IPFS, ID: "root"}, nil
 	})
-	c := NewCached(r, 1, 20*time.Millisecond, time.Second, time.Second)
+	c := NewCached(r, 1, 20*time.Millisecond, time.Second, time.Second, 64)
+	t.Cleanup(c.Close)
 	for _, n := range []string{"alice.eth", "alice.eth", "bob.eth", "alice.eth"} {
 		if _, err := c.Resolve(context.Background(), n); err != nil {
 			t.Fatal(err)
@@ -108,5 +112,27 @@ func TestCacheExpiresAndEvicts(t *testing.T) {
 	}
 	if calls.Load() != 4 {
 		t.Fatalf("expired result was served: %d", calls.Load())
+	}
+}
+
+func TestSharedHostnameRulesKeepChainPolicies(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{"SUB.Example.SNS.", "sub.example.sns"},
+		{"a.b.c.ton", "a.b.c.ton"},
+		{"é.eth", "é.eth"},
+	} {
+		got, err := Normalize(tc.input)
+		if err != nil || got != tc.want {
+			t.Errorf("%s: got=%q, err=%v", tc.input, got, err)
+		}
+	}
+	longest := strings.Repeat("a", 63) + "." + strings.Repeat("b", 63) + "." + strings.Repeat("c", 63) + "." + strings.Repeat("d", 57) + ".ton"
+	if _, err := Normalize(longest); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a.b.c.sns", "é.sns", "a_b.ton", strings.TrimSuffix(longest, ".ton") + "a.ton"} {
+		if _, err := Normalize(name); err == nil {
+			t.Errorf("accepted %s", name)
+		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"dwebproxy/internal/content"
+	"dwebproxy/internal/netutil"
 	ens "github.com/ensdomains/go-ens/v4"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	"golang.org/x/sync/singleflight"
@@ -18,6 +19,7 @@ var (
 	ErrInvalid     = errors.New("invalid domain name")
 	ErrUnavailable = errors.New("resolver not configured")
 	ErrStale       = errors.New("SNS V2 record is stale or unverified")
+	ErrBusy        = errors.New("too many concurrent resolutions")
 )
 
 type Resolver interface {
@@ -36,23 +38,11 @@ func Normalize(name string) (string, error) {
 		return n, nil
 	}
 	if strings.HasSuffix(name, ".sns") || strings.HasSuffix(name, ".ton") {
-		labels := strings.Split(name, ".")
-		if strings.HasSuffix(name, ".sns") && len(labels) > 3 {
-			return "", fmt.Errorf("%w: SNS supports one subdomain level", ErrInvalid)
+		if !netutil.ValidASCIIHostname(name) {
+			return "", ErrInvalid
 		}
-		for _, label := range labels {
-			if label == "" || len(label) > 63 {
-				return "", ErrInvalid
-			}
-			for _, c := range label {
-				// v1 browser hostnames: ASCII only for SNS and TON.
-				if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
-					return "", ErrInvalid
-				}
-			}
-			if label[0] == '-' || label[len(label)-1] == '-' {
-				return "", ErrInvalid
-			}
+		if strings.HasSuffix(name, ".sns") && strings.Count(name, ".") > 2 {
+			return "", fmt.Errorf("%w: SNS supports one subdomain level", ErrInvalid)
 		}
 		return name, nil
 	}
@@ -70,11 +60,18 @@ type Cached struct {
 	negative *expirable.LRU[string, result]
 	timeout  time.Duration
 	group    singleflight.Group
+	root     context.Context
+	cancel   context.CancelFunc
+	slots    chan struct{}
 }
 
-func NewCached(r Resolver, size int, ttl, negativeTTL, timeout time.Duration) *Cached {
-	return &Cached{resolver: r, positive: expirable.NewLRU[string, result](size, nil, ttl), negative: expirable.NewLRU[string, result](size, nil, negativeTTL), timeout: timeout}
+func NewCached(r Resolver, size int, ttl, negativeTTL, timeout time.Duration, maxConcurrent int) *Cached {
+	root, cancel := context.WithCancel(context.Background())
+	return &Cached{resolver: r, positive: expirable.NewLRU[string, result](size, nil, ttl), negative: expirable.NewLRU[string, result](size, nil, negativeTTL), timeout: timeout, root: root, cancel: cancel, slots: make(chan struct{}, maxConcurrent)}
 }
+
+// Close cancels shared work, including work whose original caller has left.
+func (c *Cached) Close() { c.cancel() }
 
 func (c *Cached) lookup(name string) (result, bool) {
 	if v, ok := c.positive.Get(name); ok {
@@ -84,6 +81,12 @@ func (c *Cached) lookup(name string) (result, bool) {
 }
 
 func (c *Cached) Resolve(ctx context.Context, name string) (content.Target, error) {
+	if err := ctx.Err(); err != nil {
+		return content.Target{}, err
+	}
+	if err := c.root.Err(); err != nil {
+		return content.Target{}, err
+	}
 	n, err := Normalize(name)
 	if err != nil {
 		return content.Target{}, err
@@ -95,9 +98,20 @@ func (c *Cached) Resolve(ctx context.Context, name string) (content.Target, erro
 		if v, ok := c.lookup(n); ok {
 			return v, nil
 		}
-		// A cancelled first browser request must not cancel other waiters.
-		work, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.timeout)
+		// Admission belongs to the work, not to any browser waiter. Reject
+		// overload instead of accumulating a queue of detached goroutines.
+		select {
+		case c.slots <- struct{}{}:
+			defer func() { <-c.slots }()
+		default:
+			return nil, ErrBusy
+		}
+		// Shared work survives an individual waiter but not process shutdown.
+		work, cancel := context.WithTimeout(c.root, c.timeout)
 		defer cancel()
+		if err := work.Err(); err != nil {
+			return nil, err
+		}
 		t, err := c.resolver.Resolve(work, n)
 		v := result{t, err}
 		if err == nil {
@@ -110,6 +124,8 @@ func (c *Cached) Resolve(ctx context.Context, name string) (content.Target, erro
 	select {
 	case <-ctx.Done():
 		return content.Target{}, ctx.Err()
+	case <-c.root.Done():
+		return content.Target{}, c.root.Err()
 	case answer := <-ch:
 		if answer.Err != nil {
 			return content.Target{}, answer.Err

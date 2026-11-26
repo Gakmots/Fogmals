@@ -14,6 +14,8 @@ import (
 
 	"dwebproxy/internal/content"
 	"dwebproxy/internal/netutil"
+	"dwebproxy/internal/records"
+	"dwebproxy/internal/testutil"
 	ens "github.com/ensdomains/go-ens/v4"
 	resolverContract "github.com/ensdomains/go-ens/v4/contracts/resolver"
 	"github.com/ensdomains/go-ens/v4/contracts/universalresolver"
@@ -30,8 +32,20 @@ func TestENSUniversalResolverAndCCIPCallback(t *testing.T) {
 	inner, _ := resolverABI.Methods["contenthash"].Outputs.Pack(hash)
 	urABI, _ := universalresolver.ContractMetaData.GetAbi()
 	output, _ := urABI.Methods["resolve"].Outputs.Pack(inner, common.HexToAddress("0x1234"))
-	for _, offchain := range []bool{false, true} {
-		t.Run(map[bool]string{false: "onchain", true: "ccip"}[offchain], func(t *testing.T) {
+	for _, tc := range []struct {
+		offchain bool
+		proxy    string
+		swarm    bool
+		localRPC bool
+	}{{}, {offchain: true}, {proxy: "http"}, {proxy: "socks5"}, {swarm: true}, {offchain: true, swarm: true}, {proxy: "http", localRPC: true}, {proxy: "socks5", localRPC: true}} {
+		offchain := tc.offchain
+		t.Run(map[bool]string{false: "onchain", true: "ccip"}[offchain]+"/proxy="+tc.proxy+map[bool]string{false: "", true: "/swarm"}[tc.swarm]+map[bool]string{false: "", true: "/local"}[tc.localRPC], func(t *testing.T) {
+			response := output
+			if tc.swarm {
+				raw, _ := hex.DecodeString("e40101fa011b20d1de9994b4d039f6548d191eb26786769f580809256b4685ef316805265ea162")
+				inner, _ := resolverABI.Methods["contenthash"].Outputs.Pack(raw)
+				response, _ = urABI.Methods["resolve"].Outputs.Pack(inner, common.HexToAddress("0x1234"))
+			}
 			var gatewayCalls, chainCalls atomic.Int32
 			gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				gatewayCalls.Add(1)
@@ -68,22 +82,40 @@ func TestENSUniversalResolverAndCCIPCallback(t *testing.T) {
 						json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": map[string]any{"code": 3, "message": "execution reverted", "data": "0x" + hex.EncodeToString(revert)}})
 						return
 					}
-					result = "0x" + hex.EncodeToString(output)
+					result = "0x" + hex.EncodeToString(response)
 				default:
 					t.Errorf("unexpected method %s", req.Method)
 				}
 				json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
 			}))
 			defer server.Close()
-			client := netutil.Client(time.Second)
+			var dial netutil.DialContextFunc
+			endpoint := server.URL
+			if tc.proxy != "" {
+				var p *testutil.Proxy
+				dial, p = proxiedRPC(t, tc.proxy, server.URL)
+				if !tc.localRPC {
+					endpoint = "http://ethereum.invalid/rpc"
+				}
+				defer func() {
+					if tc.localRPC && len(p.Requests) != 0 || !tc.localRPC && len(p.Requests) == 0 {
+						t.Errorf("ENS RPC proxy routing: local=%v proxy connections=%d", tc.localRPC, len(p.Requests))
+					}
+				}()
+			}
+			client := netutil.Client(time.Second, dial)
 			defer client.CloseIdleConnections()
-			r, err := NewENS(server.URL, client, gateway.Client())
+			r, err := NewENS(endpoint, client, gateway.Client(), records.Default().ENS)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer r.Close()
 			got, err := r.Resolve(context.Background(), "sub.example.eth")
-			if err != nil || got.Kind != content.IPFS {
+			wantKind := content.IPFS
+			if tc.swarm {
+				wantKind = content.Swarm
+			}
+			if err != nil || got.Kind != wantKind {
 				t.Fatalf("%v %v", got, err)
 			}
 			want := int32(1)

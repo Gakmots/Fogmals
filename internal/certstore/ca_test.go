@@ -60,3 +60,35 @@ func TestPrivateCAAndRestrictedCachedCertificates(t *testing.T) {
 		t.Fatal("publicly readable private key accepted")
 	}
 }
+
+func TestSharedHostnameRulesKeepCertificatePolicy(t *testing.T) {
+	for _, name := range []string{"example.eth", "a.b.c.sns", "a.b.c.ton"} {
+		if !validName(name) {
+			t.Errorf("rejected %s", name)
+		}
+	}
+	for _, name := range []string{"Example.eth", "é.eth", "example.com", "*.eth", "a..eth", "a_b.ton"} {
+		if validName(name) {
+			t.Errorf("accepted %s", name)
+		}
+	}
+}
+
+func TestInitRequiresPathsEvenWhenHTTPSIsNotUsed(t *testing.T) {
+	for _, emptyCert := range []bool{false, true} {
+		dir := t.TempDir()
+		cert, key := filepath.Join(dir, "ca.pem"), filepath.Join(dir, "key.pem")
+		if emptyCert {
+			cert = ""
+		} else {
+			key = ""
+		}
+		if err := Init(cert, key); err == nil {
+			t.Fatal("accepted empty CA path")
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil || len(entries) != 0 {
+			t.Fatalf("invalid CA initialization wrote files: %v %v", entries, err)
+		}
+	}
+}

@@ -4,6 +4,7 @@ package content
 import (
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -20,6 +21,7 @@ const (
 	IPFS    Kind = "ipfs"
 	IPNS    Kind = "ipns"
 	Arweave Kind = "arweave"
+	Swarm   Kind = "bzz"
 )
 
 var ErrUnsupported = errors.New("unsupported content protocol")
@@ -81,10 +83,16 @@ func Parse(kind Kind, value string) (Target, error) {
 			return Target{}, fmt.Errorf("Arweave ID must be canonical base64url of 32 bytes")
 		}
 		t.ID = id
+	case Swarm:
+		b, err := hex.DecodeString(id)
+		if err != nil || len(b) != 32 {
+			return Target{}, fmt.Errorf("Swarm reference must be 32 bytes of hexadecimal")
+		}
+		t.ID = hex.EncodeToString(b)
 	default:
 		return Target{}, ErrUnsupported
 	}
-	if kind != Arweave && len(t.ID) > 63 {
+	if (kind == IPFS || kind == IPNS) && len(t.ID) > 63 {
 		return Target{}, fmt.Errorf("content ID exceeds subdomain label limit")
 	}
 	return t, nil
@@ -119,6 +127,19 @@ func DecodeHash(raw []byte) (Target, error) {
 		return Parse(kind, c.String())
 	case multicodec.ArweaveNs:
 		return Parse(Arweave, base64.RawURLEncoding.EncodeToString(payload))
+	case multicodec.Swarm:
+		c, err := cid.Cast(payload)
+		if err != nil {
+			return Target{}, fmt.Errorf("invalid Swarm contenthash CID: %w", err)
+		}
+		if c.Version() != 1 || c.Type() != uint64(multicodec.SwarmManifest) {
+			return Target{}, fmt.Errorf("Swarm contenthash requires a CIDv1 swarm-manifest")
+		}
+		hash, err := multihash.Decode(c.Hash())
+		if err != nil || hash.Code != uint64(multicodec.Keccak256) || len(hash.Digest) != 32 {
+			return Target{}, fmt.Errorf("Swarm contenthash requires a 32-byte keccak-256 reference")
+		}
+		return Parse(Swarm, hex.EncodeToString(hash.Digest))
 	default:
 		return Target{}, fmt.Errorf("%w: contenthash codec %#x", ErrUnsupported, code)
 	}

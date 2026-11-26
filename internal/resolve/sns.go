@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"dwebproxy/internal/content"
+	"dwebproxy/internal/records"
 	solana "github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 	"github.com/solana-foundation/solana-go/v2/rpc/jsonrpc"
@@ -24,18 +25,20 @@ var (
 	tokenizerProgram = solana.MustPublicKeyFromBase58("nftD3vbNkNqfj2Sd3HZwbpw4BxxKWr4AjGb9X38JeZk")
 )
 
-var recordTypes = []struct {
-	name string
-	kind content.Kind
-}{{"IPFS", content.IPFS}, {"IPNS", content.IPNS}, {"ARWV", content.Arweave}}
+type SNS struct {
+	client  *rpc.Client
+	records []records.Definition
+}
 
-type SNS struct{ client *rpc.Client }
-
-func NewSNS(endpoint string, client *http.Client) *SNS {
-	if endpoint == "" {
-		return nil
+func NewSNS(endpoint string, client *http.Client, order []records.Type) (*SNS, error) {
+	definitions, err := records.ForSNS(order)
+	if err != nil {
+		return nil, err
 	}
-	return &SNS{rpc.NewWithCustomRPCClient(jsonrpc.NewClientWithOpts(endpoint, &jsonrpc.RPCClientOpts{HTTPClient: client}))}
+	if endpoint == "" || len(definitions) == 0 {
+		return nil, nil
+	}
+	return &SNS{client: rpc.NewWithCustomRPCClient(jsonrpc.NewClientWithOpts(endpoint, &jsonrpc.RPCClientOpts{HTTPClient: client})), records: definitions}, nil
 }
 
 func nameKey(label string, class, parent solana.PublicKey) (solana.PublicKey, error) {
@@ -93,8 +96,8 @@ func (r *SNS) Resolve(ctx context.Context, name string) (content.Target, error) 
 		return content.Target{}, err
 	}
 	keys := []solana.PublicKey{key}
-	for _, typ := range recordTypes {
-		k, err := nameKey("\x02"+typ.name, class, key)
+	for _, typ := range r.records {
+		k, err := nameKey("\x02"+typ.Name, class, key)
 		if err != nil {
 			return content.Target{}, err
 		}
@@ -104,6 +107,7 @@ func (r *SNS) Resolve(ctx context.Context, name string) (content.Target, error) 
 	if err != nil {
 		return content.Target{}, err
 	}
+	mintIndex := len(keys)
 	keys = append(keys, mint)
 	batch, err := r.client.GetMultipleAccountsWithOpts(ctx, keys, &rpc.GetMultipleAccountsOpts{Encoding: solana.EncodingBase64, Commitment: rpc.CommitmentFinalized})
 	if err != nil {
@@ -117,11 +121,11 @@ func (r *SNS) Resolve(ctx context.Context, name string) (content.Target, error) 
 		return content.Target{}, err
 	}
 	owner := solana.PublicKeyFromBytes(domain[32:64])
-	owner, err = r.effectiveOwner(ctx, mint, batch.Value[4], owner, batch.Context.Slot)
+	owner, err = r.effectiveOwner(ctx, mint, batch.Value[mintIndex], owner, batch.Context.Slot)
 	if err != nil {
 		return content.Target{}, err
 	}
-	for i, typ := range recordTypes {
+	for i, typ := range r.records {
 		if batch.Value[i+1] == nil {
 			continue
 		}
@@ -131,9 +135,9 @@ func (r *SNS) Resolve(ctx context.Context, name string) (content.Target, error) 
 		}
 		value, err := decodeRecord(b[96:], owner)
 		if err != nil {
-			return content.Target{}, fmt.Errorf("SNS %s: %w", typ.name, err)
+			return content.Target{}, fmt.Errorf("SNS %s: %w", typ.Name, err)
 		}
-		return content.Parse(typ.kind, value)
+		return content.Parse(typ.Kind, value)
 	}
 	return content.Target{}, ErrNotFound
 }

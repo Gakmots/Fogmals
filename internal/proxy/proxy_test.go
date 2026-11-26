@@ -45,7 +45,7 @@ func TestRoutingBoundaries(t *testing.T) {
 		method, url string
 		status      int
 	}{
-		{"CONNECT", "http://alice.eth:443", 501},
+		{"CONNECT", "alice.eth:443", 501},
 		{"GET", "http://alice.sol/", 403},
 		{"GET", "http://alice.eth.evil/", 403},
 		{"GET", "http://example.com/", 403},

@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"dwebproxy/internal/content"
+	"dwebproxy/internal/records"
 	ens "github.com/ensdomains/go-ens/v4"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
@@ -17,8 +18,12 @@ type ENS struct {
 	ccip   *http.Client
 }
 
-func NewENS(endpoint string, client, ccip *http.Client) (*ENS, error) {
-	if endpoint == "" {
+func NewENS(endpoint string, client, ccip *http.Client, order []records.Type) (*ENS, error) {
+	definitions, err := records.ForENS(order)
+	if err != nil {
+		return nil, err
+	}
+	if endpoint == "" || len(definitions) == 0 {
 		return nil, nil
 	}
 	rpcClient, err := rpc.DialOptions(context.Background(), endpoint, rpc.WithHTTPClient(client))

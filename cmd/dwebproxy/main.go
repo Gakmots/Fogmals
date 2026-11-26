@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -62,17 +64,29 @@ func run() error {
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	timeout := time.Duration(c.ResolveTimeout)
-	rpcClient := netutil.Client(timeout)
+	programProxy, err := c.ProgramProxy.Endpoint()
+	if err != nil {
+		return err
+	}
+	dial, err := netutil.NewDialer(programProxy)
+	if err != nil {
+		return err
+	}
+	rpcClient := netutil.Client(timeout, dial)
 	defer rpcClient.CloseIdleConnections()
-	ccipClient := netutil.CCIPClient(c.CCIPRead, timeout)
+	ccipClient := netutil.CCIPClient(c.CCIPRead, timeout, dial)
 	defer ccipClient.CloseIdleConnections()
-	ens, err := resolve.NewENS(c.EthereumRPC, rpcClient, ccipClient)
+	ens, err := resolve.NewENS(c.EthereumRPC, rpcClient, ccipClient, c.RecordPriority.ENS)
 	if err != nil {
 		return err
 	}
 	defer ens.Close()
-	sns := resolve.NewSNS(c.SolanaRPC, rpcClient)
-	resolver := resolve.NewCached(resolve.BySuffix{ENS: ens, SNS: sns}, c.CacheSize, time.Duration(c.CacheTTL), time.Duration(c.NegativeCacheTTL), timeout)
+	sns, err := resolve.NewSNS(c.SolanaRPC, rpcClient, c.RecordPriority.SNS)
+	if err != nil {
+		return err
+	}
+	resolver := resolve.NewCached(resolve.BySuffix{ENS: ens, SNS: sns}, c.CacheSize, time.Duration(c.CacheTTL), time.Duration(c.NegativeCacheTTL), timeout, c.MaxConcurrent)
+	defer resolver.Close()
 	h, err := proxy.New(c, resolver, logger)
 	if err != nil {
 		return err
@@ -83,22 +97,45 @@ func run() error {
 	server.Protocols.SetHTTP1(true)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	listener, err := net.Listen("tcp", c.Listen)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
 	done := make(chan error, 1)
-	go func() { done <- server.ListenAndServe() }()
-	logger.Info("HTTP proxy listening", "address", c.Listen, "ton_enabled", c.TONProxy != "", "fallback_enabled", c.FallbackProxy != "", "https_enabled", c.HTTPS.Enabled)
+	go func() {
+		if c.ListenProtocol == "socks5" {
+			done <- h.ServeSOCKS5(listener)
+		} else {
+			done <- server.Serve(listener)
+		}
+	}()
+	logger.Info("proxy listening", "protocol", c.ListenProtocol, "address", c.Listen, "ton_enabled", c.TONProxy != "", "fallback_enabled", c.FallbackProxy != "", "web3_https_enabled", c.HTTPS.Enabled, "program_proxy_enabled", c.ProgramProxy.Enabled)
 	select {
 	case err := <-done:
-		if err == http.ErrServerClosed {
+		if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
 			return nil
 		}
 		return err
 	case <-ctx.Done():
+		listener.Close()
+		resolver.Close()
 		h.Close() // net/http Shutdown does not own hijacked CONNECT sessions
 		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := server.Shutdown(shutdown); err != nil {
 			server.Close()
 			return err
+		}
+		if c.ListenProtocol == "socks5" {
+			select {
+			case err := <-done:
+				if !errors.Is(err, net.ErrClosed) {
+					return err
+				}
+			case <-shutdown.Done():
+				return shutdown.Err()
+			}
 		}
 		return nil
 	}

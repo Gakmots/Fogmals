@@ -11,6 +11,8 @@ require (
 	github.com/multiformats/go-multicodec v0.10.0
 	github.com/multiformats/go-multihash v0.2.3
 	github.com/solana-foundation/solana-go/v2 v2.2.0
+	github.com/things-go/go-socks5 v0.1.3
+	golang.org/x/net v0.58.0
 	golang.org/x/sync v0.24.0
 )
 
@@ -71,7 +73,6 @@ require (
 	go.uber.org/ratelimit v0.3.1 // indirect
 	go.uber.org/zap v1.27.0 // indirect
 	golang.org/x/crypto v0.55.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.41.0 // indirect

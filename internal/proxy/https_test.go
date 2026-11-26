@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"dwebproxy/internal/netutil"
 	"fmt"
 	"io"
 	"net"
@@ -248,7 +249,7 @@ func rawConnect(t *testing.T, entry, target string) (net.Conn, *http.Response) {
 		conn.Close()
 		t.Fatal(err)
 	}
-	return &bufferedConn{Conn: conn, reader: reader}, resp
+	return &netutil.BufferedConn{Conn: conn, Reader: reader}, resp
 }
 
 func TestHTTPSAuthorityAndTrustBoundaries(t *testing.T) {
@@ -306,8 +307,9 @@ func TestHTTPSAuthorityAndTrustBoundaries(t *testing.T) {
 // The mock next hop alone resolves/dials the origin. This verifies that the
 // local proxy sends CONNECT and preserves the remote certificate unchanged.
 func TestOrdinaryHTTPSUsesFallbackWithoutInterception(t *testing.T) {
-	for _, secureProxy := range []bool{false, true} {
-		t.Run(fmt.Sprint("secure-proxy=", secureProxy), func(t *testing.T) {
+	for _, tc := range []struct{ secureProxy, web3, socks bool }{{false, false, false}, {true, false, false}, {false, true, false}, {true, true, false}, {false, false, true}, {true, false, true}} {
+		secureProxy := tc.secureProxy
+		t.Run(fmt.Sprint("secure-proxy=", secureProxy, "/web3=", tc.web3, "/socks=", tc.socks), func(t *testing.T) {
 			origin := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "origin") }))
 			origin.EnableHTTP2 = true
 			origin.StartTLS()
@@ -349,11 +351,19 @@ func TestOrdinaryHTTPSUsesFallbackWithoutInterception(t *testing.T) {
 			}
 			defer next.Close()
 			c := config.Default()
-			enableHTTPS(t, &c)
+			if tc.web3 {
+				enableHTTPS(t, &c)
+			} else {
+				c.HTTPS.Enabled = false
+				c.HTTPS.CACert, c.HTTPS.CAKey = "", ""
+			}
 			p, _ := strconv.Atoi(originURL.Port())
 			c.HTTPS.ConnectPorts = append(c.HTTPS.ConnectPorts, p)
 			c.FallbackProxy = next.URL
 			h, resolver := newHandler(t, c)
+			if !tc.web3 && h.connect.ca != nil {
+				t.Fatal("ordinary HTTPS loaded a CA")
+			}
 			if secureProxy {
 				h.fallback.transport.TLSClientConfig = next.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
 			}
@@ -361,6 +371,9 @@ func TestOrdinaryHTTPSUsesFallbackWithoutInterception(t *testing.T) {
 			defer entry.Close()
 			defer h.Close()
 			client := httpsClient(entry.URL, origin.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs, true)
+			if tc.socks {
+				client = socksClient(t, socksEntry(t, h), origin.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs, true)
+			}
 			defer client.CloseIdleConnections()
 			resp, err := client.Get(origin.URL + "/file")
 			if err != nil {
@@ -382,10 +395,10 @@ func waitNoTunnels(t *testing.T, h *Handler) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		h.https.mu.Lock()
-		n := len(h.https.connections)
-		h.https.mu.Unlock()
-		if n == 0 && len(h.https.slots) == 0 {
+		h.connect.mu.Lock()
+		n := len(h.connect.connections)
+		h.connect.mu.Unlock()
+		if n == 0 && len(h.connect.slots) == 0 {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -504,8 +517,7 @@ func TestTunnelBufferedBytesAndHalfClose(t *testing.T) {
 		conn.Write(append([]byte("reply:"), b...))
 	}))
 	defer next.Close()
-	c := config.Default()
-	enableHTTPS(t, &c)
+	c := httpConfig()
 	c.FallbackProxy = next.URL
 	h, _ := newHandler(t, c)
 	entry := httptest.NewServer(h)

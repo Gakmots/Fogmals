@@ -48,7 +48,7 @@ func TestSubdomainRequestAndStreamingHeaders(t *testing.T) {
 		}
 	}))
 	defer up.Close()
-	p, err := New([]string{localhost(up.URL)}, time.Second, logger())
+	p, err := New([]string{localhost(up.URL)}, time.Second, logger(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestFailoverOnlyForUpstreamFailures(t *testing.T) {
 			defer first.Close()
 			second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fallback.Add(1); io.WriteString(w, "fallback") }))
 			defer second.Close()
-			p, _ := New([]string{localhost(first.URL), localhost(second.URL)}, time.Second, logger())
+			p, _ := New([]string{localhost(first.URL), localhost(second.URL)}, time.Second, logger(), nil)
 			defer p.Close()
 			w := httptest.NewRecorder()
 			p.Serve(w, httptest.NewRequest("GET", "http://alice.eth/", nil), root)
@@ -123,7 +123,7 @@ func TestRedirectMapping(t *testing.T) {
 		{ipfs, "https://example.com/", "https://example.com/", false},
 		{ipfs, "/docs", "", true},
 		{ipfs, "http://localhost:8080/api/v0/shutdown", "", true},
-		{ipfs, "/../escape", "", true},
+		{ipfs, "/../escape", "http://alice.eth/escape", false},
 		{ar, "/" + ar.ID + "/docs/", "http://alice.eth/docs/", false},
 		{ar, "/api/v0/shutdown", "", true},
 	} {
@@ -148,7 +148,7 @@ func TestPathTraversalAndOverrides(t *testing.T) {
 			t.Errorf("accepted %s", s)
 		}
 	}
-	for _, s := range []string{"/", "/x%20y/", "/docs/?x=a%2Fb"} {
+	for _, s := range []string{"/", "/x%20y/", "/docs/?x=a%2Fb", "/100%25.html", "/literal%2520space", "/literal%25text"} {
 		u, _ := url.Parse(s)
 		if err := ValidatePath(u); err != nil {
 			t.Errorf("%s: %v", s, err)
@@ -175,7 +175,7 @@ func TestArweaveSandboxRedirectStaysInsideProxy(t *testing.T) {
 		io.WriteString(w, "Arweave content")
 	}))
 	defer up.Close()
-	p, _ := New([]string{localhost(up.URL)}, time.Second, logger())
+	p, _ := New([]string{localhost(up.URL)}, time.Second, logger(), nil)
 	defer p.Close()
 	w := httptest.NewRecorder()
 	p.Serve(w, httptest.NewRequest("GET", "http://alice.eth/docs/a.html", nil), root)

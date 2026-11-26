@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"dwebproxy/internal/netutil"
 	lru "github.com/hashicorp/golang-lru/v2"
 )
 
@@ -33,8 +34,8 @@ func serial() (*big.Int, error) { return rand.Int(rand.Reader, new(big.Int).Lsh(
 // Init creates a new CA exclusively; an existing key or certificate is never
 // replaced. Only ca.pem should be imported into a user's trust store.
 func Init(certPath, keyPath string) error {
-	if filepath.Clean(certPath) == filepath.Clean(keyPath) {
-		return fmt.Errorf("CA certificate and key paths must differ")
+	if certPath == "" || keyPath == "" || filepath.Clean(certPath) == filepath.Clean(keyPath) {
+		return fmt.Errorf("CA certificate and key paths must be nonempty and distinct")
 	}
 	for _, p := range []string{certPath, keyPath} {
 		if _, err := os.Lstat(p); err == nil {
@@ -126,23 +127,7 @@ func Load(certPath, keyPath string, size int) (*Authority, error) {
 }
 
 func validName(name string) bool {
-	if name != strings.ToLower(name) || !(strings.HasSuffix(name, ".eth") || strings.HasSuffix(name, ".sns") || strings.HasSuffix(name, ".ton")) {
-		return false
-	}
-	if len(name) > 253 {
-		return false
-	}
-	for _, label := range strings.Split(name, ".") {
-		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-			return false
-		}
-		for _, r := range label {
-			if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
-				return false
-			}
-		}
-	}
-	return true
+	return netutil.ValidASCIIHostname(name) && (strings.HasSuffix(name, ".eth") || strings.HasSuffix(name, ".sns") || strings.HasSuffix(name, ".ton"))
 }
 
 func (a *Authority) Certificate(name string) (*tls.Certificate, error) {
